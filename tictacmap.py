@@ -30,7 +30,9 @@ class TictactoeEnv(gym.Env):
         return self._get_obs()
 
     def _get_obs(self):
-        return np.append(self.board, self.active_player != 'X').reshape(1, -1)
+        return self.board.reshape(1,  -1)
+        # TODO
+        # return np.append(self.board, self.active_player != 'X').reshape(1, -1)
 
     def _winner(self):
         winner = None
@@ -54,7 +56,7 @@ class TictactoeEnv(gym.Env):
         """
         # Invalid move
         if not self.action_space.contains(action) or self.board[action]:
-            return self._get_obs(), -100., True, None
+            return self._get_obs(), -1., True, None
 
         reward = 0.
         done = False

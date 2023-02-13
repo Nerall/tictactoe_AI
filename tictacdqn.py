@@ -12,7 +12,7 @@ class DQNAgent():
         self.gamma = 0.95
         self.epsilon = 1.
         self.epsilon_min = 0.01
-        self.epsilon_decay = 0.995
+        self.epsilon_decay = 0.99
         self.batch_size = 32
 
         self.env = TictactoeEnv()
@@ -23,7 +23,7 @@ class DQNAgent():
     def _build_model(self):
         # Model
         model = Sequential()
-        model.add(InputLayer(batch_input_shape=(1, 10)))
+        model.add(InputLayer(batch_input_shape=(1, 9)))
         model.add(Dense(64, activation='relu'))
         model.add(Dense(64, activation='relu'))
         model.add(Dense(9, activation='linear'))
@@ -40,12 +40,14 @@ class DQNAgent():
             action = np.argmax(self.model.predict(state)[0])
         return action
 
-    def train(self, opp_fun):
+    def train(self, opp_fun, args=None):
         # Select starting board and number of cells filled
         init_eps = np.random.random()
         # 20 % chance of having 0 to 3 cells filled: [0 0.8) -> [0 3]
         # 5 % chance of having 4 to 7 cells filled: [0.8 1) -> [4 7]
-        init_mode = int(init_eps * 5) if init_eps < 0.8 else int(init_eps * 20 - 12)
+        # init_mode = int(init_eps * 5) if init_eps < 0.8 else int(init_eps * 20 - 12)
+        # TODO
+        init_mode = int(init_eps < 0.5)
         state, _, done, _ = self.env.random_board(init_mode)
 
         while not done:
@@ -53,17 +55,24 @@ class DQNAgent():
             action = self.act(state)
             next_state, reward, done, _ = self.env.step(action)
             self.memory.append((state, action, reward, next_state, done))
+            state = next_state
             if not done:
                 # Opp move
-                action = opp_fun()
+                if not args:
+                    action = opp_fun()
+                else:
+                    action = opp_fun(args)
                 next_state, reward, done, _ = self.env.step(action)
                 self.memory.append((state, action, reward, next_state, done))
+                state = next_state
 
     def val(self, opp_fun):
-        rewards = [0.] * 10
-        for i in range(10):
-            state = self.env.reset()
-            done = False
+        rewards = [0.] * 50
+        for i in range(50):
+            state, reward, done = self.env.reset(), 0, False
+            if i % 2:
+                # Switch between 'X' and 'O' player
+                state, reward, done, _ = self.env.step(opp_fun())
             while not done:
                 # Player move
                 action = self.act(state, epsilon_greedy=False)
@@ -77,7 +86,8 @@ class DQNAgent():
         return np.mean(rewards)
 
     def replay(self):
-        for state, action, reward, next_state, done in self.memory:
+        minibatch = random.sample(self.memory, self.batch_size)
+        for state, action, reward, next_state, done in minibatch:
             target = reward
             if not done:
                 target += self.gamma * np.max(self.model.predict(next_state)[0])
@@ -89,53 +99,55 @@ class DQNAgent():
         self.memory = []
 
 agent = DQNAgent()
-val_history = [(0, agent.val(agent.env.better_valid_move))]
-skipped = 0
+val_history = [(0, -100.)]
 for i in range(1, 1001):
     # Compute training
-    agent.train(agent.env.valid_random_move)
+    while len(agent.memory) < 1000:
+        agent.train(agent.env.valid_random_move)
 
     # Update weights
-    if len(agent.memory) > agent.batch_size:
-        agent.replay()
-        val_reward = agent.val(agent.env.better_valid_move)
-        best_epoch, best_reward = val_history[-1]
+    agent.replay()
 
-        print(f'Epoch {i}/{1000}. Epsilon: {agent.epsilon:.3f}. Reward: {val_reward}')
-        if val_reward > best_reward:
-            val_history.append((i, val_reward))
-            print(f'Reward improved from {best_reward} (epoch {best_epoch})')
-            agent.model.save('model_DQN_random_' + str(i))
-        elif skipped >= 10:
-            print(f'No improvement since {best_epoch} (reward {best_reward}), skipping to fine-tuning')
-            # Early stopping
-            break
-        else:
-            skipped += 1
-            print(f'Reward not improved since epoch {best_epoch} (reward {best_reward})')
+    val_reward = agent.val(agent.env.better_valid_move)
+    best_epoch, best_reward = val_history[-1]
+
+    print(f'Epoch {i}/{1000}. Epsilon: {agent.epsilon:.3f}. Reward: {val_reward:.3f}')
+    if val_reward > best_reward:
+        val_history.append((i, val_reward))
+        print(f'  Reward improved from {best_reward:.3f} (epoch {best_epoch})')
+        agent.model.save('model_DQN_random_' + str(i))
+    elif i >= best_epoch + 50:
+        print(f'  No improvement since {best_epoch} (reward {best_reward:.3f}), skipping to fine-tuning')
+        # Early stopping
+        break
+    else:
+        print(f'  Reward not improved since epoch {best_epoch} (reward {best_reward:.3f})')
 
 # Fine-tuning
+best_model_name = 'model_DQN_random_' + str(best_epoch)
+print('Loading back model', best_model_name)
+agent = DQNAgent(load_model(best_model_name))
 agent.epsilon = agent.epsilon_min
-opp_model = clone_model(agent.model)
-for j in range(i, i + 1000):
+opp_model = load_model(best_model_name)
+val_history = [(0, -100.)]
+for i in range(1, 1001):
     # Compute training
-    agent.train(agent.env.AI_move(opp_model))
+    while len(agent.memory) < 1000:
+        agent.train(agent.env.AI_move, opp_model)
 
     # Update weights
-    if len(agent.memory) > agent.batch_size:
-        agent.replay()
-        val_reward = agent.val(agent.env.better_valid_move)
-        best_epoch, best_reward = val_history[-1]
+    agent.replay()
+    val_reward = agent.val(agent.env.better_valid_move)
+    best_epoch, best_reward = val_history[-1]
 
-        print(f'Epoch {j}/{1000}. Epsilon: {agent.epsilon:.3f}. Reward: {val_reward}')
-        if val_reward > best_reward:
-            val_history.append(i, val_reward)
-            print(f'Reward improved from {best_reward} (epoch {best_epoch})')
-            agent.model.save('model_DQN_vs_' + str(j))
-        elif skipped >= 10:
-            print(f'No improvement since {best_epoch} (reward {best_reward}), end of learning process')
-            # Early stopping
-            break
-        else:
-            skipped += 1
-            print(f'Reward not improved since epoch {best_epoch} (reward {best_reward})')
+    print(f'Epoch {i}/{1000}. Epsilon: {agent.epsilon:.3f}. Reward: {val_reward:.3f}')
+    if val_reward > best_reward:
+        val_history.append((i, val_reward))
+        print(f'Reward improved from {best_reward:.3f} (epoch {best_epoch})')
+        agent.model.save('model_DQN_vs_' + str(i))
+    elif i >= best_epoch + 50:
+        print(f'No improvement since {best_epoch} (reward {best_reward:.3f}), end of learning process')
+        # Early stopping
+        break
+    else:
+        print(f'Reward not improved since epoch {best_epoch} (reward {best_reward:.3f})')
