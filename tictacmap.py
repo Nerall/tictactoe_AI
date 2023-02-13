@@ -21,7 +21,7 @@ class TictactoeEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset()
-        self.board = np.zeros((9,), dtype=np.uint8)
+        self.board = np.zeros((9,), dtype=np.int8)
         self.active_player = 'X'
 
         if self.render_mode == "human":
@@ -30,18 +30,18 @@ class TictactoeEnv(gym.Env):
         return self._get_obs()
 
     def _get_obs(self):
-        return np.append(self.board, self.active_player == 'X')
+        return np.append(self.board, self.active_player != 'X').reshape(1, -1)
 
     def _winner(self):
         winner = None
         for i in range(3):
             if self.board[3 * i] and self.board[3 * i] == self.board[3 * i + 1] == self.board[3 * i + 2]:
-                winner = ('', 'X', 'O')[self.board[3 * i]]
+                winner = {1:'X', -1:'O'}[self.board[3 * i]]
             if self.board[i] and self.board[i] == self.board[3 + i] == self.board[6 + i]:
-                winner = ('', 'X', 'O')[self.board[i]]
+                winner = {1:'X', -1:'O'}[self.board[i]]
         if self.board[4]:
              if self.board[0] == self.board[4] == self.board[8] or self.board[2] == self.board[4] == self.board[6]:
-                winner = ('', 'X', 'O')[self.board[4]]
+                winner = {1:'X', -1:'O'}[self.board[4]]
         return winner
 
     def step(self, action):
@@ -52,19 +52,19 @@ class TictactoeEnv(gym.Env):
             bool: done
             dict: additional information
         """
-
         # Invalid move
         if not self.action_space.contains(action) or self.board[action]:
-            reward = -100 if self.active_player == 'X' else 100
-            return self._get_obs(), reward, True, None
+            return self._get_obs(), -100., True, None
 
-        reward = 0
+        reward = 0.
         done = False
 
-        self.board[action] = {'X':1, 'O':2}[self.active_player]
+        self.board[action] = {'X':1, 'O':-1}[self.active_player]
         winner = self._winner()
         if winner:
-            reward = 10 if winner == self.active_player else -10
+            reward = 1. - 0.01 * self.board[self.board != 0].size
+            if winner != self.active_player:
+                reward = -reward
             done = True
         elif self.board.all(): # Draw
             done = True
@@ -120,19 +120,69 @@ class TictactoeEnv(gym.Env):
             pygame.quit()
 
     def random_move(self):
+        action = np.random.randint(0, 9)
+        return action
+
+    def valid_random_move(self):
         valid_cells = np.arange(9)[self.board == 0]
         action = np.random.choice(valid_cells)
+        return action
 
-        winner = self._winner()
-        reward = 0
-        done = False
+    def better_valid_move(self):
+        player = {'X':1, 'O':-1}[self.active_player]
+        opp = 'X' if player == 'O' else 'O'
+        action = None
 
-        self.board[action] = {'X':1, 'O':2}[self.active_player]
-        if winner:
-            reward = 10 if winner == self.active_player else -10
-            done = True
-        elif self.board.all(): # Draw
-            done = True
-        self.active_player = {'X':'O', 'O':'X'}[self.active_player]
+        lines = [(i, i + 1, i + 2) for i in range(3)] \
+              + [(i, i + 3, i + 6) for i in range(3)] \
+              + [(0, 4, 8), (2, 4, 6)]
+        # Instant win
+        for line in lines:
+            player_cells = [idx for idx in line if self.board[idx] == player]
+            if len(player_cells) == 2:
+                action = list(set(line) - set(player_cells))[0]
+                break
+        if action == None:
+            # Instant lose
+            for line in lines:
+                opp_cells = [idx for idx in line if self.board[idx] == opp]
+                if len(opp_cells) == 2:
+                    action = list(set(line) - set(opp_cells))[0]
+                    break
+            if action == None:
+                # Random move
+                action = self.valid_random_move()
 
-        return self._get_obs(), reward, done, None
+        return action
+
+    def human_move(self):
+        player_input = input()
+        assert player_input.isdigit()
+        action = int(player_input)
+        return action
+
+    def AI_move(self, model):
+        action = np.argmax(model.predict(self._get_obs())[0])
+        return action
+
+    def random_board(self, played_cells):
+        if not (0 <= played_cells <= 8):
+            return None
+
+        self.reset()
+        obs, reward, done, info = self._get_obs(), 0, False, None
+        for i in range(min(5, played_cells)):
+            # No lock if 5 moves or less
+            if i < 5:
+                tmp_board = np.copy(self.board)
+                tmp_player = self.active_player
+            action = self.valid_random_move()
+            obs, reward, done, info = self.step(action)
+            while done:
+                # Revert action
+                self.board = np.copy(tmp_board)
+                self.active_player = tmp_player
+                action = self.valid_random_move()
+                obs, reward, done, info = self.step(action)
+
+        return obs, reward, done, info
